@@ -1,0 +1,55 @@
+name: Quick Render
+
+on:
+  workflow_dispatch:
+    inputs:
+      composition:
+        description: 'Composition to render'
+        required: true
+        default: 'PS2WinterWalk'
+        type: choice
+        options:
+          - PS2WinterWalk
+          - PS2WinterWalkSquare
+          - PS2WinterWalkVertical
+          - MyComp
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Install Chrome
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libnspr4 libnss3 libatk1.0-0 libatk-bridge2.0-0 \
+            libcups2 libdrm2 libxkbcommon0 libxcomposite1 \
+            libxdamage1 libxfixes3 libxrandr2 libgbm1 \
+            libasound2t64 > /dev/null
+
+      - name: Render ${{ github.event.inputs.composition }}
+        run: |
+          npx remotion render \
+            "${{ github.event.inputs.composition }}" \
+            "out/video.mp4" \
+            --codec=h264 \
+            --crf=20 \
+            --concurrency=4
+
+      - name: Upload video
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.composition }}
+          path: out/video.mp4
+          retention-days: 7

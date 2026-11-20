@@ -1,0 +1,234 @@
+name: Render Remotion Video
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      composition:
+        description: 'Composition to render'
+        required: true
+        default: 'PS2WinterWalk'
+        type: choice
+        options:
+          - PS2WinterWalk
+          - PS2WinterWalkSquare
+          - PS2WinterWalkVertical
+          - MyComp
+      format:
+        description: 'Output format'
+        required: true
+        default: 'mp4'
+        type: choice
+        options:
+          - mp4
+          - webm
+          - prores
+      quality:
+        description: 'Render quality'
+        required: true
+        default: 'high'
+        type: choice
+        options:
+          - high
+          - medium
+          - low
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  render:
+    name: Render ${{ github.event.inputs.composition || 'PS2WinterWalk' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chrome dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libnspr4 libnss3 libatk1.0-0 libatk-bridge2.0-0 \
+            libcups2 libdrm2 libxkbcommon0 libxcomposite1 \
+            libxdamage1 libxfixes3 libxrandr2 libgbm1 \
+            libasound2t64 libpango-1.0-0 libcairo2
+
+      - name: Verify Remotion CLI
+        run: npx remotion versions
+
+      - name: Render video
+        id: render
+        env:
+          COMPOSITION: ${{ github.event.inputs.composition || 'PS2WinterWalk' }}
+          FORMAT: ${{ github.event.inputs.format || 'mp4' }}
+          QUALITY: ${{ github.event.inputs.quality || 'high' }}
+        run: |
+          COMP="${COMPOSITION}"
+          FMT="${FORMAT}"
+
+          # Quality settings
+          case "${QUALITY}" in
+            high)
+              CRF=18
+              PRESET="slow"
+              ;;
+            medium)
+              CRF=23
+              PRESET="medium"
+              ;;
+            low)
+              CRF=28
+              PRESET="fast"
+              ;;
+          esac
+
+          OUTPUT="out/${COMP}.${FMT}"
+
+          echo "Rendering ${COMP} to ${OUTPUT}..."
+          echo "Quality: ${QUALITY} (CRF=${CRF}, Preset=${PRESET})"
+
+          npx remotion render \
+            "${COMP}" \
+            "${OUTPUT}" \
+            --codec=h264 \
+            --crf="${CRF}" \
+            --preset="${PRESET}" \
+            --concurrency=4
+
+          echo "output_path=${OUTPUT}" >> $GITHUB_OUTPUT
+
+      - name: Verify output
+        run: |
+          FILE="${{ steps.render.outputs.output_path }}"
+          if [ -f "$FILE" ]; then
+            SIZE=$(du -h "$FILE" | cut -f1)
+            echo "✅ Render successful: $FILE ($SIZE)"
+            ls -la "$FILE"
+          else
+            echo "❌ Render failed: $FILE not found"
+            exit 1
+          fi
+
+      - name: Upload video artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.composition || 'PS2WinterWalk' }}-video
+          path: ${{ steps.render.outputs.output_path }}
+          retention-days: 30
+          compression-level: 0
+
+      - name: Upload all compositions (on main branch)
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        run: |
+          for COMP in PS2WinterWalk PS2WinterWalkSquare PS2WinterWalkVertical MyComp; do
+            npx remotion render "$COMP" "out/${COMP}.mp4" --codec=h264 --crf=20 --concurrency=2
+          done
+
+      - name: Upload all videos artifact
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        uses: actions/upload-artifact@v4
+        with:
+          name: all-compositions
+          path: out/*.mp4
+          retention-days: 30
+          compression-level: 0
+
+  # Optional: Deploy to GitHub Pages (for preview)
+  deploy-preview:
+    name: Deploy Preview
+    needs: render
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - name: Download video artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: all-compositions
+          path: public/videos
+
+      - name: Create preview page
+        run: |
+          cat > public/index.html << 'EOF'
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <title>Remotion Video Preview</title>
+            <style>
+              body { font-family: system-ui; max-width: 800px; margin: 2rem auto; padding: 0 1rem; background: #0f0f1a; color: #fff; }
+              h1 { color: #00d9ff; }
+              .video-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1rem; }
+              video { width: 100%; border-radius: 8px; background: #1a1a2e; }
+              .card { background: #1a1a2e; padding: 1rem; border-radius: 8px; border: 1px solid #333; }
+            </style>
+          </head>
+          <body>
+            <h1>🎬 Remotion Renders</h1>
+            <p>Generated on ${{ github.run_number }} (${{ github.sha }})</p>
+            <div class="video-grid">
+              <div class="card">
+                <h3>PS2WinterWalk (1920×1080)</h3>
+                <video controls src="videos/PS2WinterWalk.mp4"></video>
+              </div>
+              <div class="card">
+                <h3>PS2WinterWalkSquare (1080×1080)</h3>
+                <video controls src="videos/PS2WinterWalkSquare.mp4"></video>
+              </div>
+              <div class="card">
+                <h3>PS2WinterWalkVertical (1080×1920)</h3>
+                <video controls src="videos/PS2WinterWalkVertical.mp4"></video>
+              </div>
+              <div class="card">
+                <h3>MyComp (Main Demo)</h3>
+                <video controls src="videos/MyComp.mp4"></video>
+              </div>
+            </div>
+          </body>
+          </html>
+          EOF
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  notify:
+    name: Notify Completion
+    needs: [render, deploy-preview]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Success notification
+        if: success()
+        run: |
+          echo "✅ All jobs completed successfully!"
+          echo "📥 Download videos from: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "🌐 Preview page: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
+
+      - name: Failure notification
+        if: failure()
+        run: |
+          echo "❌ Render failed. Check logs at: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          exit 1
